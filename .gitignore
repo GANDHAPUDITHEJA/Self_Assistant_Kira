@@ -1,0 +1,36 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# Node and frontend build output
+node_modules/
+web/node_modules/
+web/dist/
+dist/
+.vite/
+
+# Browser automation profile and local state
+chrome_profile/
+.browser_state.json
+
+# Local Azure and editor state
+.azure/
+.vscode/
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db

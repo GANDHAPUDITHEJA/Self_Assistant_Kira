@@ -1,0 +1,12 @@
+ollama
+playwright
+pyautogui
+pyttsx3
+sounddevice
+numpy
+faster-whisper
+openai
+python-dotenv 
+keyringl
+fastapi
+uvicorn
