@@ -153,6 +153,64 @@ def assistant_turn(
     text = user_text.strip()
     text = re.sub(r"^\s*plat\b", "play", text, count=1, flags=re.IGNORECASE)
 
+    clear_text = re.match(
+        r"^(?:please\s+)?(?:clear|delete)\s+(?:all\s+)?(?:the\s+)?"
+        r"(?:text|content|everything)(?:\s+in\s+(?:the\s+)?notepad)?[.!?]*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if clear_text:
+        result = _run_direct_tool("clear_text", {}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct clear text, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
+    save_file = re.match(
+        r"^(?:please\s+)?(?:save\s+(?:(?:the\s+)?(?:file|document)\s*)?"
+        r"(?:as\s+|with\s+(?:the\s+)?name\s+|named\s+)|"
+        r"save\s+)(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if save_file:
+        filename = save_file.group(1).strip().rstrip(".!?")
+        result = _run_direct_tool(
+            "save_file",
+            {"filename": filename},
+            event_callback,
+        )
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct save file, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
+    type_text = re.match(
+        r"^(?:please\s+)?(?:write|type)\s+(?:in\s+(?:the\s+)?notepad\s*)?(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if type_text and not re.search(r"\b(?:whatsapp|message)\b", text, re.IGNORECASE):
+        typed_text = type_text.group(1).strip()
+        result = _run_direct_tool(
+            "type_text",
+            {"text": typed_text},
+            event_callback,
+        )
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct type text, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
     whatsapp_send = re.match(
         r"^(?:please\s+)?(?:send|write)\s+(?:a\s+)?(?:whatsapp\s+)?message\s+"
         r"(?:to\s+)?(.+?)\s+(?:saying|that)\s+(.+)$",
@@ -400,24 +458,51 @@ def assistant_turn(
             return result
 
     scroll_match = re.match(
-        r"^(?:please\s+)?(?:scroll\s+)?(down|up|top|bottom)"
-        r"(?:\s+(?:of\s+)?(?:the\s+)?(?:youtube|youtube\s*page|page|results))?\s*$",
+        r"^(?:please\s+)?(?:scroll\s+(?:to\s+)?)?(down|up|top|bottom)"
+        r"(?:\s+(?:of\s+)?(?:the\s+)?(?:youtube|youtube\s*page|page|results|window|screen))?\s*$",
         text,
         flags=re.IGNORECASE,
     )
     if scroll_match:
         direction = scroll_match.group(1).lower()
-        action = "scroll_down" if direction == "down" else "scroll_up" if direction == "up" else direction
+        youtube_scroll = bool(re.search(r"\b(?:youtube|youtube\s*page|results)\b", text, re.IGNORECASE))
+        if youtube_scroll:
+            action = "scroll_down" if direction == "down" else "scroll_up" if direction == "up" else direction
+            result = _run_direct_tool("youtube_control", {"action": action}, event_callback)
+        else:
+            result = _run_direct_tool("scroll_page", {"action": direction}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct scroll, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
+    open_numbered_item = re.match(
+        r"^(?:please\s+)?open\s+(?:the\s+)?"
+        r"(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)"
+        r"(?:\s+(?:item|file|folder|directory))?"
+        r"(?:\s+(?:from\s+top|at\s+top))?\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_numbered_item:
+        position = re.sub(r"(st|nd|rd|th)$", "", open_numbered_item.group(1).lower())
+        kind_match = re.search(r"\b(file|folder|directory)\b", text, re.IGNORECASE)
+        kind = kind_match.group(1).lower() if kind_match else "any"
+        if kind == "directory":
+            kind = "folder"
         result = _run_direct_tool(
-            "youtube_control",
-            {"action": action},
+            "open_item",
+            {"position": position, "kind": kind},
             event_callback,
         )
         history.extend([
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": result},
         ])
-        print(f"[direct YouTube scroll, {time.time() - started:.1f}s]")
+        print(f"[direct numbered item, {time.time() - started:.1f}s]")
         _deliver_reply(result, speak_callback)
         return result
 
@@ -501,20 +586,25 @@ def assistant_turn(
         return result
 
     open_folder_match = re.match(
-        r"^(?:please\s+)?open\s+(?:my\s+)?(desktop|documents|downloads|pictures|music|videos)\s*(?:folder)?$",
+        r"^(?:please\s+)?open\s+(?:my\s+)?(.+?)(?:\s+folder)?$",
         text,
         flags=re.IGNORECASE,
     )
     if open_folder_match:
-        folder_name = open_folder_match.group(1).capitalize()
-        result = _run_direct_tool("open_folder", {"name": folder_name}, event_callback)
-        history.extend([
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": result},
-        ])
-        print(f"[direct folder, {time.time() - started:.1f}s]")
-        _deliver_reply(result, speak_callback)
-        return result
+        folder_name = open_folder_match.group(1).strip()
+        if re.search(r"\.[a-z0-9]{1,10}$", folder_name, re.IGNORECASE):
+            folder_name = ""
+        if folder_name.lower() in {"desktop", "documents", "downloads", "pictures", "music", "videos"}:
+            folder_name = folder_name.capitalize()
+        if folder_name:
+            result = _run_direct_tool("open_folder", {"name": folder_name}, event_callback)
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": result},
+            ])
+            print(f"[direct folder, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
 
     open_file_match = re.match(
         r"^(?:please\s+)?(?:open|find)\s+(?:the\s+)?(?:file\s+)?(.+)$",
@@ -523,7 +613,7 @@ def assistant_turn(
     )
     if open_file_match:
         file_name = open_file_match.group(1).strip().rstrip(".!?")
-        if re.search(r"\.(?:txt|pdf|docx?|xlsx?|pptx?|png|jpe?g|csv|zip|exe)$", file_name, re.IGNORECASE):
+        if re.search(r"\.[a-z0-9]{1,10}$", file_name, re.IGNORECASE) or re.search(r"\bresume\b", file_name, re.IGNORECASE):
             result = _run_direct_tool("open_file", {"name": file_name}, event_callback)
             history.extend([
                 {"role": "user", "content": user_text},

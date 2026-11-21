@@ -19,6 +19,33 @@ OS = platform.system()
 CDP_PORT = 9222
 KEYRING_SERVICE = "voice_assistant"
 pyautogui.FAILSAFE = True
+_recent_app = ""
+_active_folder: Path | None = None
+
+
+def _focus_notepad() -> bool:
+    if OS != "Windows":
+        return False
+    try:
+        import win32gui
+
+        windows = []
+
+        def enum_windows(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd).lower()
+                if "notepad" in title:
+                    windows.append(hwnd)
+
+        win32gui.EnumWindows(enum_windows, None)
+        if windows:
+            win32gui.ShowWindow(windows[-1], 9)
+            win32gui.SetForegroundWindow(windows[-1])
+            time.sleep(0.4)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _chrome_user_data_dir() -> str:
@@ -577,8 +604,24 @@ def web_search(query: str) -> str:
 
 
 def open_app(name: str) -> str:
+    global _recent_app
     try:
         normalized_name = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+        if normalized_name in {"notepad", "text editor"}:
+            if _focus_notepad():
+                _recent_app = "notepad"
+                return "Opened Notepad."
+            result = subprocess.run(
+                ["cmd", "/c", "start", "", "notepad.exe"],
+                capture_output=True,
+            )
+            for _ in range(20):
+                time.sleep(0.25)
+                if _focus_notepad():
+                    _recent_app = "notepad"
+                    return "Opened Notepad."
+            _recent_app = "notepad"
+            return "Opened Notepad." if result.returncode == 0 else "Could not open Notepad."
         website_urls = {
             "whatsapp": "https://web.whatsapp.com",
             "whatsapp web": "https://web.whatsapp.com",
@@ -760,7 +803,22 @@ def _open_path(path: str) -> None:
 
 
 def open_file(name: str) -> str:
-    hits = _find_file(name)
+    global _active_folder
+    hits = []
+    if _active_folder is not None and _active_folder.exists():
+        query = name.lower().replace("_", " ").replace("-", " ")
+        for root, dirs, files in os.walk(_active_folder):
+            dirs[:] = [directory for directory in dirs if not directory.startswith(".")]
+            for filename in files:
+                normalized = filename.lower().replace("_", " ").replace("-", " ")
+                if query in normalized or filename.lower() in query:
+                    hits.append(os.path.join(root, filename))
+                    if len(hits) >= 1:
+                        break
+            if hits:
+                break
+    if not hits:
+        hits = _find_file(name)
     if not hits:
         return f"I couldn't find a file named {name}."
     _open_path(hits[0])
@@ -768,11 +826,29 @@ def open_file(name: str) -> str:
 
 
 def open_folder(name: str) -> str:
+    global _active_folder
     key = name.strip().capitalize()
     for path in _FOLDERS.get(key, []):
         if path.exists():
             _open_path(str(path))
+            _active_folder = path
             return f"Opened your {key} folder."
+    if os.path.isabs(name):
+        path = Path(name)
+        if path.exists():
+            _open_path(str(path))
+            _active_folder = path if path.is_dir() else path.parent
+            return f"Opened {path.name or str(path)}."
+    query = name.strip().rstrip("\\/")
+    candidates = [
+        _HOME / query,
+        _HOME / "OneDrive" / query,
+    ]
+    for path in candidates:
+        if path.exists():
+            _open_path(str(path))
+            _active_folder = path
+            return f"Opened {path.name or name}."
     return f"I don't know a folder called {name}."
 
 
@@ -814,9 +890,107 @@ def set_volume(action: str) -> str:
 
 
 def type_text(text: str) -> str:
+    if _recent_app == "notepad":
+        _focus_notepad()
     time.sleep(1)
     pyautogui.write(text, interval=0.02)
     return "Typed it."
+
+
+def save_file(filename: str) -> str:
+    clean_name = os.path.basename(filename.strip().strip("\"'")).strip()
+    if not clean_name:
+        return "I need a file name."
+    if "." not in clean_name:
+        clean_name += ".txt"
+    documents = next(
+        (str(path) for path in _FOLDERS["Documents"] if path.exists()),
+        str(_HOME),
+    )
+    os.makedirs(documents, exist_ok=True)
+
+    if OS == "Windows" and _recent_app == "notepad":
+        _focus_notepad()
+        pyautogui.hotkey("ctrl", "shift", "s")
+        time.sleep(1)
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.2)
+        pyautogui.write(documents, interval=0.02)
+        pyautogui.press("enter")
+        time.sleep(0.8)
+        pyautogui.hotkey("alt", "n")
+        time.sleep(0.2)
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.write(clean_name, interval=0.02)
+        pyautogui.press("enter")
+        time.sleep(0.8)
+        return f"Saved the file as {clean_name}."
+    return f"I couldn't save the file. Open Notepad first."
+
+
+def clear_text() -> str:
+    if _recent_app == "notepad":
+        _focus_notepad()
+        time.sleep(0.3)
+        pyautogui.hotkey("ctrl", "a")
+        pyautogui.press("backspace")
+        return "Cleared the text in Notepad."
+    return "Open Notepad first."
+
+
+def scroll_page(action: str) -> str:
+    action = action.lower().strip()
+    if action == "down":
+        pyautogui.press("pagedown")
+        pyautogui.scroll(-700)
+    elif action == "up":
+        pyautogui.press("pageup")
+        pyautogui.scroll(700)
+    elif action == "top":
+        pyautogui.press("home")
+    elif action == "bottom":
+        pyautogui.press("end")
+    else:
+        return f"I don't know the scroll action {action}."
+    return f"Scrolled {action}."
+
+
+def open_item(position: str, kind: str = "any") -> str:
+    if _active_folder is None or not _active_folder.exists():
+        return "Open a folder first."
+    words = {
+        "first": 1,
+        "second": 2,
+        "third": 3,
+        "fourth": 4,
+        "fifth": 5,
+        "sixth": 6,
+        "seventh": 7,
+        "eighth": 8,
+        "ninth": 9,
+        "tenth": 10,
+    }
+    index = words.get(position.lower().strip(), 0)
+    if position.isdigit():
+        index = int(position)
+    if index < 1:
+        return f"I don't know item number {position}."
+    try:
+        entries = sorted(
+            (entry for entry in _active_folder.iterdir() if not entry.name.startswith(".")),
+            key=lambda entry: entry.name.lower(),
+        )
+        if kind in {"file", "files"}:
+            entries = [entry for entry in entries if entry.is_file()]
+        elif kind in {"folder", "folders", "directory", "directories"}:
+            entries = [entry for entry in entries if entry.is_dir()]
+        if index > len(entries):
+            return f"There is no {kind} number {index} in {_active_folder.name}."
+        target = entries[index - 1]
+        _open_path(str(target))
+        return f"Opened {target.name}."
+    except Exception as error:
+        return f"Could not open item number {index}: {error}"
 
 
 def press_keys(keys: str) -> str:
@@ -992,6 +1166,10 @@ TOOL_FUNCS: dict[str, ToolFunction] = {
     "close_app": close_app,
     "set_volume": set_volume,
     "type_text": type_text,
+    "save_file": save_file,
+    "clear_text": clear_text,
+    "scroll_page": scroll_page,
+    "open_item": open_item,
     "press_keys": press_keys,
     "take_screenshot": take_screenshot,
     "lock_screen": lock_screen,
@@ -1013,6 +1191,10 @@ TOOLS = [
     _tool("close_app", "Close a running application.", {"name": {"type": "string"}}, ["name"]),
     _tool("set_volume", "Change the system volume.", {"action": {"type": "string", "enum": ["up", "down", "mute", "unmute"]}}, ["action"]),
     _tool("type_text", "Type text into the focused window.", {"text": {"type": "string"}}, ["text"]),
+    _tool("save_file", "Save the currently open Notepad document with a file name.", {"filename": {"type": "string"}}, ["filename"]),
+    _tool("clear_text", "Clear all text in the currently open Notepad document."),
+    _tool("scroll_page", "Scroll the active window.", {"action": {"type": "string", "enum": ["up", "down", "top", "bottom"]}}, ["action"]),
+    _tool("open_item", "Open a numbered file or folder from the top of the most recently opened folder.", {"position": {"type": "string"}, "kind": {"type": "string", "enum": ["any", "file", "folder"]}}, ["position"]),
     _tool("press_keys", "Press a keyboard shortcut.", {"keys": {"type": "string"}}, ["keys"]),
     _tool("take_screenshot", "Take a screenshot of the screen."),
     _tool("lock_screen", "Lock the computer screen."),

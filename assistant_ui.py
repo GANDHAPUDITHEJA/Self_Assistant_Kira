@@ -91,6 +91,23 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/api/voice/status")
+def voice_status() -> dict[str, Any]:
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        default_input = sd.default.device[0]
+        input_available = default_input is not None and default_input >= 0
+        return {
+            "available": input_available,
+            "defaultInput": None if default_input is None else str(default_input),
+            "devices": len(devices),
+        }
+    except Exception as error:
+        return {"available": False, "error": str(error)}
+
+
 @app.get("/api/history")
 def history() -> dict[str, Any]:
     turns = [
@@ -148,14 +165,20 @@ def voice_start() -> dict[str, Any]:
         global voice_thread_running
         try:
             while not voice_cancel.is_set():
-                audio = assistant_fast.record_until_silence(
-                    max_seconds=12,
-                    minimum_seconds=0.5,
-                )
+                try:
+                    audio = assistant_fast.record_until_silence(
+                        max_seconds=12,
+                        minimum_seconds=0.5,
+                    )
+                except Exception as error:
+                    raise RuntimeError(f"Microphone capture failed: {error}") from error
                 if voice_cancel.is_set():
                     break
                 publish("state.changed", {"state": "thinking", "detail": "Transcribing"})
-                text = assistant_fast.transcribe(audio)
+                try:
+                    text = assistant_fast.transcribe(audio)
+                except Exception as error:
+                    raise RuntimeError(f"Voice transcription failed: {error}") from error
                 if not text:
                     publish("state.changed", {"state": "listening", "detail": "Listening"})
                     continue

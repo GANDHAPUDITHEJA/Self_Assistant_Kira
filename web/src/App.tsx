@@ -88,9 +88,22 @@ export default function App() {
       await fetch("/api/voice/cancel", { method: "POST" });
       return;
     }
+    const statusResponse = await fetch("/api/voice/status");
+    if (statusResponse.ok) {
+      const status = await statusResponse.json();
+      if (!status.available) {
+        setState("error");
+        setDetail(status.error ? `Microphone unavailable: ${status.error}` : "Microphone unavailable");
+        return;
+      }
+    }
     setState("listening");
     setDetail("Listening");
-    await fetch("/api/voice/start", { method: "POST" });
+    const response = await fetch("/api/voice/start", { method: "POST" });
+    if (!response.ok) {
+      setState("error");
+      setDetail("Could not start voice");
+    }
   }
 
   async function answerConfirmation(approved: boolean) {
