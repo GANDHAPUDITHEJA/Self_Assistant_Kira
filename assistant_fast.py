@@ -13,6 +13,7 @@ import os
 import re
 import time
 import wave
+from pathlib import Path
 
 import pyttsx3
 from dotenv import load_dotenv
@@ -332,8 +333,28 @@ def assistant_turn(
         _deliver_reply(result, speak_callback)
         return result
 
+    local_file_search = re.match(
+        r"^(?:please\s+)?(?:search|find)\s+(?:for\s+)?(?:the\s+)?"
+        r"(?:file|folder|item)?\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if local_file_search:
+        query = local_file_search.group(1).strip().rstrip(".!? ")
+        if query and not re.search(
+            r"\b(?:on\s+(?:the\s+)?(?:web|internet)|google|youtube)\b",
+            text,
+            re.IGNORECASE,
+        ):
+            result = _run_direct_tool("search_in_explorer", {"query": query}, event_callback)
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": result})
+            print(f"[direct local file search, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
+
     direct_search = re.match(
-        r"^(?:please\s+)?(?:search|google|look\s+up)(?:\s+(?:for|about|what\s+is))?\s+(.+)$",
+        r"^(?:please\s+)?(?:google|look\s+up|search\s+(?:the\s+)?(?:web|internet))(?:\s+(?:for|about|what\s+is))?\s+(.+)$",
         text,
         flags=re.IGNORECASE,
     )
@@ -457,8 +478,25 @@ def assistant_turn(
             _deliver_reply(result, speak_callback)
             return result
 
+    search_match = re.match(
+        r"^(?:please\s+)?(?:search|find)\s+(?:for\s+)?(?:the\s+)?(?:file|folder|item)?\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if search_match:
+        query = search_match.group(1).strip().rstrip(".!? ")
+        if query and not re.search(r"\b(?:google|youtube|web)\b", query, re.IGNORECASE):
+            result = _run_direct_tool("search_in_explorer", {"query": query}, event_callback)
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": result},
+            ])
+            print(f"[direct file search, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
+
     scroll_match = re.match(
-        r"^(?:please\s+)?(?:scroll\s+(?:to\s+)?)?(down|up|top|bottom)"
+        r"^(?:please\s+)?(?:scroll\s+(?:to\s+)?|go\s+)?(down|up|top|bottom)"
         r"(?:\s+(?:of\s+)?(?:the\s+)?(?:youtube|youtube\s*page|page|results|window|screen))?\s*$",
         text,
         flags=re.IGNORECASE,
@@ -479,6 +517,23 @@ def assistant_turn(
         _deliver_reply(result, speak_callback)
         return result
 
+    folder_navigation_match = re.match(
+        r"^(?:please\s+)?(?:go\s+|come\s+)?(back|forward)(?:\s+(?:a\s+)?(?:folder|page|window))?[.!?]*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if folder_navigation_match:
+        direction = folder_navigation_match.group(1).lower()
+        tool_name = "explorer_forward" if direction == "forward" else "explorer_back"
+        result = _run_direct_tool(tool_name, {}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct Explorer navigation, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
     open_numbered_item = re.match(
         r"^(?:please\s+)?open\s+(?:the\s+)?"
         r"(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)?)"
@@ -494,10 +549,46 @@ def assistant_turn(
         if kind == "directory":
             kind = "folder"
         result = _run_direct_tool(
-            "open_item",
-            {"position": position, "kind": kind},
+            "open_visible_search_result",
+            {"position": position},
             event_callback,
         )
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct visible search result, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+        saved_results_file = Path.home() / "AppData" / "Local" / "Temp" / "kira_search_results.json"
+        saved_paths: list[str] = []
+        if saved_results_file.exists():
+            try:
+                saved_paths = json.loads(saved_results_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                saved_paths = []
+        words = {
+            "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+            "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+        }
+        index = words.get(position, int(position) if position.isdigit() else 0)
+        if index >= 1 and index <= len(saved_paths):
+            tool_name = "open_folder" if Path(saved_paths[index - 1]).is_dir() else "open_file"
+            result = _run_direct_tool(
+                tool_name,
+                {"name": saved_paths[index - 1]},
+                event_callback,
+            )
+            try:
+                saved_results_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+        else:
+            result = _run_direct_tool(
+                "open_item",
+                {"position": position, "kind": kind},
+                event_callback,
+            )
         history.extend([
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": result},
@@ -538,6 +629,15 @@ def assistant_turn(
         is_folder = bool(re.search(r"\b(?:desktop|documents|downloads|pictures|music|videos)(?:\s+folder)?$", app_name, re.IGNORECASE))
         is_file = bool(re.search(r"\.(?:txt|pdf|docx?|xlsx?|pptx?|png|jpe?g|csv|zip|exe)$", app_name, re.IGNORECASE))
         if app_name and not is_folder and not is_file:
+            folder_result = _run_direct_tool("open_folder", {"name": app_name}, event_callback)
+            if re.match(r"^Opened\b", folder_result, re.IGNORECASE):
+                history.extend([
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": folder_result},
+                ])
+                print(f"[direct open active-folder item, {time.time() - started:.1f}s]")
+                _deliver_reply(folder_result, speak_callback)
+                return folder_result
             result = _run_direct_tool("open_app", {"name": app_name}, event_callback)
             history.extend([
                 {"role": "user", "content": user_text},

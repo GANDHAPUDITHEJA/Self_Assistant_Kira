@@ -4,6 +4,8 @@ type Role = "user" | "assistant";
 type AssistantState = "idle" | "listening" | "thinking" | "acting" | "speaking" | "ready" | "error";
 
 type Turn = { id: string; role: Role; text: string; createdAt: string };
+type SearchResult = { index: number; name: string; kind: "file" | "folder"; path: string };
+type FolderScope = { name: string | null; path: string | null };
 
 const stateLabel: Record<AssistantState, string> = {
   idle: "Say Hey Kira",
@@ -21,10 +23,21 @@ export default function App() {
   const [state, setState] = useState<AssistantState>("idle");
   const [detail, setDetail] = useState("Say Hey Kira");
   const [confirmation, setConfirmation] = useState<{ id: string; question: string } | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchMessage, setSearchMessage] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [folderScope, setFolderScope] = useState<FolderScope>({ name: null, path: null });
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
+    fetch("/api/folder/status")
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (!cancelled && data) setFolderScope(data);
+      })
+      .catch(() => undefined);
     fetch("/api/history")
       .then((response) => {
         if (!response.ok) throw new Error("Could not load conversation");
@@ -57,6 +70,9 @@ export default function App() {
         setTurns((old) => [...old, { id: crypto.randomUUID(), role: "assistant", text: data.text, createdAt: new Date().toISOString() }]);
       }
       if (payload.event === "confirmation.requested") setConfirmation({ id: data.id, question: data.question });
+      if (payload.event === "folder.changed") {
+        setFolderScope({ name: data.name ?? null, path: data.path ?? null });
+      }
     };
     return () => {
       events.close();
@@ -81,6 +97,8 @@ export default function App() {
       body: JSON.stringify({ text: value }),
     });
     if (!response.ok) setState("error");
+    const folderResponse = await fetch("/api/folder/status");
+    if (folderResponse.ok) setFolderScope(await folderResponse.json());
   }
 
   async function toggleMic() {
@@ -115,12 +133,85 @@ export default function App() {
     setConfirmation(null);
   }
 
+  async function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    const value = searchText.trim();
+    if (!value) return;
+    setSearching(true);
+    setSearchMessage("");
+    try {
+      const response = await fetch("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: value }),
+      });
+      if (!response.ok) throw new Error("Search failed");
+      const data = await response.json();
+      setSearchResults(data.results ?? []);
+      setFolderScope(data.scope ?? { name: null, path: null });
+      setSearchMessage(data.results?.length ? `${data.results.length} result(s) found` : "No matching files or folders");
+    } catch {
+      setSearchResults([]);
+      setSearchMessage("Could not search files");
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function openSearchResult(index: number) {
+    const response = await fetch("/api/search/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ index }),
+    });
+    if (!response.ok) return;
+    setSearchResults([]);
+    setSearchMessage("Opened selected item");
+    const folderResponse = await fetch("/api/folder/status");
+    if (folderResponse.ok) setFolderScope(await folderResponse.json());
+  }
+
   return (
     <main className={`app state-${state}`}>
       <header className="topbar">
         <div className="brand"><span className="brand-mark" />Kira</div>
+        <form className="document-search" onSubmit={submitSearch}>
+          {folderScope.name && (
+            <span className="search-scope" title={folderScope.path ?? undefined}>
+              {folderScope.name}
+            </span>
+          )}
+          <input
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder="Search files or folders"
+            aria-label="Search Documents"
+          />
+          <button type="submit" disabled={!searchText.trim() || searching} aria-label="Search">
+            Search
+          </button>
+        </form>
         <span className="status-dot" aria-label={detail} />
       </header>
+
+      {(searchResults.length > 0 || searchMessage) && (
+        <section className="search-results" aria-live="polite">
+          <div className="search-summary">
+            {folderScope.name ? `Searching in ${folderScope.name}` : "Search results"}
+            {searchMessage ? ` - ${searchMessage}` : ""}
+          </div>
+          {searchResults.map((result) => (
+            <button className="search-result" key={result.path} onClick={() => openSearchResult(result.index)}>
+              <span className="result-number">{result.index}</span>
+              <span className="result-info">
+                <strong>{result.name}</strong>
+                <small>{result.kind}</small>
+              </span>
+              <span className="open-label">Open</span>
+            </button>
+          ))}
+        </section>
+      )}
 
       <section className="conversation" aria-label="Conversation">
         {turns.length === 0 && (

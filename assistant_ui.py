@@ -80,6 +80,14 @@ class ConfirmRequest(BaseModel):
     approved: bool
 
 
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+
+
+class OpenSearchResultRequest(BaseModel):
+    index: int = Field(ge=1, le=10)
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     providers = assistant_fast._configured_provider_names()
@@ -122,11 +130,90 @@ def history() -> dict[str, Any]:
     return {"turns": turns}
 
 
+@app.post("/api/search")
+def search(request: SearchRequest) -> dict[str, Any]:
+    import tools
+
+    reply = tools.search_files(request.query)
+    folder = tools.get_active_folder()
+    publish("folder.changed", folder)
+    saved_results_file = Path.home() / "AppData" / "Local" / "Temp" / "kira_search_results.json"
+    results: list[dict[str, Any]] = []
+    if saved_results_file.exists():
+        try:
+            paths = json.loads(saved_results_file.read_text(encoding="utf-8"))
+            for index, value in enumerate(paths, start=1):
+                path = Path(value)
+                results.append({
+                    "index": index,
+                    "name": path.name,
+                    "kind": "folder" if path.is_dir() else "file",
+                    "path": str(path),
+                })
+        except Exception:
+            results = []
+    return {
+        "query": request.query.strip(),
+        "reply": reply,
+        "results": results,
+        "scope": folder,
+    }
+
+
+@app.get("/api/folder/status")
+def folder_status() -> dict[str, Any]:
+    import tools
+
+    return tools.get_active_folder()
+
+
+@app.post("/api/search/open")
+def open_search_result(request: OpenSearchResultRequest) -> dict[str, Any]:
+    import tools
+
+    saved_results_file = Path.home() / "AppData" / "Local" / "Temp" / "kira_search_results.json"
+    if not saved_results_file.exists():
+        raise HTTPException(status_code=404, detail="No saved search results")
+    try:
+        paths = json.loads(saved_results_file.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not read search results")
+    if request.index > len(paths):
+        raise HTTPException(status_code=404, detail="Search result not found")
+    target = Path(paths[request.index - 1])
+    reply = tools.open_folder(str(target)) if target.is_dir() else tools.open_file(str(target))
+    try:
+        saved_results_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+    publish("response.final", {"text": reply})
+    return {"opened": reply, "path": str(target), "name": target.name}
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, Any]:
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
+    import re
+    from pathlib import Path
+    import tools
+
+    numbered_open = re.match(
+        r"^(?:please\s+)?open\s+(?:the\s+)?"
+        r"(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+)"
+        r"(?:\s+(?:file|folder|item|result))?[.!?]*$",
+        text,
+        re.IGNORECASE,
+    )
+    if numbered_open:
+        import tools
+        position = numbered_open.group(1).lower()
+        reply = tools.open_visible_search_result(position)
+        publish("transcript.final", {"text": text})
+        publish("response.final", {"text": reply})
+        publish("state.changed", {"state": "ready", "detail": "Ready"})
+        return {"text": reply}
     wake = assistant_fast._extract_wake_command(text)
     if wake is not None:
         text = wake
@@ -143,6 +230,8 @@ def chat(request: ChatRequest) -> dict[str, Any]:
         speak_callback=ui_speak,
         event_callback=event,
     )
+    import tools
+    publish("folder.changed", tools.get_active_folder())
     publish("response.final", {"text": reply})
     publish("state.changed", {"state": "ready", "detail": "Ready"})
     return {"text": reply}
