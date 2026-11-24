@@ -145,6 +145,22 @@ def _deliver_reply(reply: str, speak_callback=None) -> None:
         speak(reply)
 
 
+def _generate_written_content(request: str) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Generate the exact requested text for the user. "
+                "Do not add explanations, greetings, or notes outside the document. "
+                "For code, output code only. For a letter or email, output a complete ready-to-use document."
+            ),
+        },
+        {"role": "user", "content": request},
+    ]
+    message, _ = chat(messages)
+    return (message.content or "").strip()
+
+
 def assistant_turn(
     user_text: str,
     speak_callback=None,
@@ -191,6 +207,56 @@ def assistant_turn(
         print(f"[direct save file, {time.time() - started:.1f}s]")
         _deliver_reply(result, speak_callback)
         return result
+
+    literal_write = re.match(
+        r"^(?:please\s+)?(?:write|type)\s+text(?:\s+in\s+(?:the\s+)?notepad)?\s*:?\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if literal_write:
+        literal_text = literal_write.group(1).strip()
+        open_result = _run_direct_tool("open_app", {"name": "notepad"}, event_callback)
+        result = _run_direct_tool("type_text", {"text": literal_text}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct literal text, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
+    generated_write = re.match(
+        r"^(?:please\s+)?(?:write|type|create|draft|generate)\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if generated_write:
+        request = generated_write.group(1).strip()
+        needs_generation = bool(re.search(
+            r"\b(?:program|code|hello world|java|python|c\+\+|c#|javascript|"
+            r"letter|application|email|report|essay|poem|paragraph|"
+            r"due to|fever|sick|leave|hr|human resources)\b",
+            request,
+            re.IGNORECASE,
+        ))
+        if needs_generation:
+            open_result = _run_direct_tool("open_app", {"name": "notepad"}, event_callback)
+            generated = _generate_written_content(request)
+            if not generated:
+                result = "I couldn't generate the requested text."
+            else:
+                result = _run_direct_tool(
+                    "type_text",
+                    {"text": generated},
+                    event_callback,
+                )
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": result},
+            ])
+            print(f"[generated text, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
 
     type_text = re.match(
         r"^(?:please\s+)?(?:write|type)\s+(?:in\s+(?:the\s+)?notepad\s*)?(.+)$",
@@ -368,6 +434,27 @@ def assistant_turn(
             _deliver_reply(result, speak_callback)
             return result
 
+    explicit_youtube_search = re.match(
+        r"^(?:please\s+)?search\s+(?:on\s+|in\s+)?(?:youtube|you\s*tube)\s*(?:for)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if explicit_youtube_search:
+        query = explicit_youtube_search.group(1).strip().strip(".!? ")
+        if query:
+            result = _run_direct_tool(
+                "search_youtube",
+                {"query": query},
+                event_callback,
+            )
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": result},
+            ])
+            print(f"[direct YouTube search, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
+
     youtube_search_request = re.match(
         r"^(?:please\s+)?(?:open\s+(?:youtube|you\s*tube)\s+(?:and\s+)?"
         r"|search(?:\s+(?:for|about))?\s+)"
@@ -389,8 +476,8 @@ def assistant_turn(
         ).strip()
         if query:
             result = _run_direct_tool(
-                "play_youtube",
-                {"song": query},
+                "search_youtube",
+                {"query": query},
                 event_callback,
             )
             history.extend([
@@ -456,6 +543,21 @@ def assistant_turn(
             print(f"[direct YouTube ordinal result, {time.time() - started:.1f}s]")
             _deliver_reply(result, speak_callback)
             return result
+
+    open_youtube_home = re.match(
+        r"^(?:please\s+)?(?:open|go\s+to)\s+(?:the\s+)?(?:youtube|you\s*tube)\s*(?:home(?:page)?)?[.!?]*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_youtube_home:
+        result = _run_direct_tool("open_app", {"name": "youtube"}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct YouTube home, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
 
     youtube_play = re.match(
         r"^(?:please\s+)?(?:play|plat|open)\s+(.+?)(?:\s+on\s+(?:youtube|you tube))?$",
@@ -619,6 +721,22 @@ def assistant_turn(
             _deliver_reply(result, speak_callback)
             return result
 
+    open_explicit_app_match = re.match(
+        r"^(?:please\s+)?open\s+(?:the\s+)?app(?:lication)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if open_explicit_app_match:
+        app_name = open_explicit_app_match.group(1).strip().rstrip(".!?")
+        result = _run_direct_tool("open_app", {"name": app_name}, event_callback)
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct open app, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
     open_app_match = re.match(
         r"^(?:please\s+)?open\s+(?:the\s+)?(.+)$",
         text,
@@ -628,7 +746,16 @@ def assistant_turn(
         app_name = open_app_match.group(1).strip().rstrip(".!?")
         is_folder = bool(re.search(r"\b(?:desktop|documents|downloads|pictures|music|videos)(?:\s+folder)?$", app_name, re.IGNORECASE))
         is_file = bool(re.search(r"\.(?:txt|pdf|docx?|xlsx?|pptx?|png|jpe?g|csv|zip|exe)$", app_name, re.IGNORECASE))
-        if app_name and not is_folder and not is_file:
+        if app_name and is_file:
+            result = _run_direct_tool("open_file", {"name": app_name}, event_callback)
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": result},
+            ])
+            print(f"[direct open file, {time.time() - started:.1f}s]")
+            _deliver_reply(result, speak_callback)
+            return result
+        if app_name and not is_folder:
             folder_result = _run_direct_tool("open_folder", {"name": app_name}, event_callback)
             if re.match(r"^Opened\b", folder_result, re.IGNORECASE):
                 history.extend([

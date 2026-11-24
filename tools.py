@@ -360,6 +360,33 @@ def _youtube_watch_url(search_query: str, result_index: int = 0) -> str:
 
 
 @_retry_if_closed
+def search_youtube(query: str) -> str:
+    clean_query = query.strip().rstrip(".!? ")
+    if not clean_query:
+        return "Tell me what to search for on YouTube."
+
+    search_url = (
+        "https://www.youtube.com/results?search_query="
+        + urllib.parse.quote(clean_query)
+    )
+    if OS == "Windows":
+        try:
+            page = _find_existing_page("youtube.com")
+            if page is None:
+                page = _get_page()
+            page.bring_to_front()
+            page.goto(search_url, wait_until="commit", timeout=10000)
+            _remember_tab(page.url, page.title())
+            return f"Searched YouTube for {clean_query}. The search results are open."
+        except Exception:
+            pass
+
+    subprocess.Popen([_chrome_path(), search_url])
+    _remember_tab(search_url)
+    return f"Searched YouTube for {clean_query}. The search results are open."
+
+
+@_retry_if_closed
 def play_youtube(song: str) -> str:
     ordinal_match = re.match(
         r"^__youtube_result__(\d+)__$",
@@ -706,9 +733,48 @@ def open_app(name: str) -> str:
             if subprocess.run(["open", "-a", name], capture_output=True).returncode == 0:
                 return f"Opened {name}."
         elif OS == "Windows":
-            if subprocess.run(
-                ["cmd", "/c", "start", "", name], capture_output=True
-            ).returncode == 0:
+            try:
+                powershell = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Get-StartApps | ConvertTo-Json -Compress",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+                apps = json.loads(powershell.stdout or "[]")
+                if isinstance(apps, dict):
+                    apps = [apps]
+                query = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+                app_match = next(
+                    (
+                        app for app in apps
+                        if query
+                        in re.sub(
+                            r"[^a-z0-9]+",
+                            " ",
+                            str(app.get("Name", "")).lower(),
+                        ).strip()
+                    ),
+                    None,
+                )
+                if app_match:
+                    app_id = app_match["AppID"]
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "", f"shell:AppsFolder\\{app_id}"]
+                    )
+                    return f"Opened {app_match['Name']}."
+            except Exception:
+                pass
+            direct = subprocess.run(
+                ["cmd", "/c", "start", "", name],
+                capture_output=True,
+            )
+            if direct.returncode == 0:
                 return f"Opened {name}."
             pyautogui.press("win")
             time.sleep(0.6)
@@ -1551,6 +1617,7 @@ def _tool(
 
 TOOL_FUNCS: dict[str, ToolFunction] = {
     "play_youtube": play_youtube,
+    "search_youtube": search_youtube,
     "youtube_control": youtube_control,
     "web_search": web_search,
     "open_app": open_app,
@@ -1582,6 +1649,7 @@ TOOL_FUNCS: dict[str, ToolFunction] = {
 
 TOOLS = [
     _tool("play_youtube", "Search YouTube and play a song or video.", {"song": {"type": "string"}}, ["song"]),
+    _tool("search_youtube", "Open YouTube search results without starting a video.", {"query": {"type": "string"}}, ["query"]),
     _tool("youtube_control", "Control the playing YouTube video or scroll YouTube.", {"action": {"type": "string", "enum": ["pause", "play", "mute", "unmute", "fullscreen", "forward", "back", "next", "scroll_down", "scroll_up", "top", "bottom"]}}, ["action"]),
     _tool("web_search", "Search Google in the browser.", {"query": {"type": "string"}}, ["query"]),
     _tool("open_app", "Open an application on the laptop.", {"name": {"type": "string"}}, ["name"]),
