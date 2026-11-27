@@ -699,6 +699,53 @@ def assistant_turn(
         _deliver_reply(result, speak_callback)
         return result
 
+    youtube_seek_match = re.match(
+        r"^(?:please\s+)?(?:(?:go|skip|fast)\s+)?"
+        r"(?P<direction>forward|back|backward|rewind)"
+        r"(?:\s+10\s*(?:seconds?|secs?))?"
+        r"(?:\s+(?:by\s+)?(?P<count>\d+|once|twice|thrice|one|two|three|four|five|six|seven|eight|nine|ten)"
+        r"\s*(?:times?|x)?)?"
+        r"(?:\s+(?:in|on)\s+(?:the\s+)?(?:video|youtube))?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if youtube_seek_match:
+        direction = youtube_seek_match.group("direction").lower()
+        action = "back" if direction in {"back", "backward", "rewind"} else "forward"
+        count_text = youtube_seek_match.group("count")
+        count_words = {
+            "once": 1,
+            "twice": 2,
+            "thrice": 3,
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+        }
+        count = (
+            count_words.get(count_text.lower(), int(count_text) if count_text.isdigit() else 1)
+            if count_text
+            else 1
+        )
+        result = _run_direct_tool(
+            "youtube_control",
+            {"action": action, "count": count},
+            event_callback,
+        )
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct YouTube seek, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
+
     youtube_control_match = re.match(
         r"^(?:please\s+)?(pause|stop|resume|play|mute|unmute|full\s*screen|fullscreen|forward|back|next|previous)(?:\s+(?:the\s+)?(?:video|youtube|song))?$",
         text,
@@ -720,6 +767,33 @@ def assistant_turn(
             print(f"[direct YouTube control, {time.time() - started:.1f}s]")
             _deliver_reply(result, speak_callback)
             return result
+
+    brightness_match = re.match(
+        r"^(?:please\s+)?(?:(?:turn\s+|set\s+)?(?:(?:the\s+)?(?:laptop|screen|display)\s+)?brightness\s+(?P<direction>up|down|higher|lower)"
+        r"|(?P<verb>increase|raise|decrease|lower)\s+(?:(?:the\s+)?(?:laptop|screen|display)\s+)?brightness)"
+        r"(?:\s+(?:by\s+)?(?P<count>\d+)(?:\s*(?:times?|steps?))?)?$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if brightness_match:
+        direction = (
+            brightness_match.group("direction")
+            or brightness_match.group("verb")
+        ).lower()
+        action = "down" if direction in {"down", "lower", "decrease"} else "up"
+        count = int(brightness_match.group("count") or 1)
+        result = _run_direct_tool(
+            "set_brightness",
+            {"action": action, "count": count},
+            event_callback,
+        )
+        history.extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": result},
+        ])
+        print(f"[direct brightness, {time.time() - started:.1f}s]")
+        _deliver_reply(result, speak_callback)
+        return result
 
     open_explicit_app_match = re.match(
         r"^(?:please\s+)?open\s+(?:the\s+)?app(?:lication)?\s+(.+)$",

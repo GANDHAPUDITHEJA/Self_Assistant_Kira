@@ -129,6 +129,7 @@ class YouTubeNavigationTests(unittest.TestCase):
         win32gui = Mock()
         win32gui.GetForegroundWindow.return_value = 11
         win32gui.IsWindowVisible.return_value = True
+        win32gui.IsIconic.return_value = False
         win32gui.GetWindowText.side_effect = {
             11: "YouTube - Google Chrome",
             22: "Kira - Google Chrome",
@@ -151,7 +152,7 @@ class YouTubeNavigationTests(unittest.TestCase):
             result = tools._navigate_existing_youtube_window(search_url)
 
         self.assertTrue(result)
-        win32gui.ShowWindow.assert_called_once_with(11, 9)
+        win32gui.ShowWindow.assert_not_called()
         win32gui.SetForegroundWindow.assert_called_once_with(11)
         hotkey.assert_called_once_with("ctrl", "l")
         write.assert_called_once_with(search_url, interval=0.001)
@@ -163,6 +164,7 @@ class YouTubeNavigationTests(unittest.TestCase):
         win32gui = Mock()
         win32gui.GetForegroundWindow.return_value = 11
         win32gui.IsWindowVisible.return_value = True
+        win32gui.IsIconic.return_value = False
         win32gui.GetWindowText.side_effect = lambda hwnd: titles.get(hwnd, "")
         win32gui.SetForegroundWindow.return_value = True
 
@@ -189,6 +191,7 @@ class YouTubeNavigationTests(unittest.TestCase):
             result = tools._navigate_existing_youtube_window(search_url)
 
         self.assertTrue(result)
+        win32gui.ShowWindow.assert_not_called()
         hotkey.assert_has_calls([
             call("ctrl", "shift", "a"),
             call("ctrl", "l"),
@@ -225,6 +228,49 @@ class YouTubeNavigationTests(unittest.TestCase):
         hotkey.assert_called_once_with("ctrl", "shift", "a")
         write.assert_called_once_with("YouTube", interval=0.001)
         press.assert_has_calls([call("down"), call("enter"), call("esc")])
+
+    def test_seek_forward_defaults_to_one_ten_second_skip_without_bringing_tab_forward(self) -> None:
+        with (
+            patch.object(tools, "OS", "Windows"),
+            patch.object(tools, "_port_open", return_value=True),
+            patch.object(tools, "_find_existing_page", return_value=self.page),
+        ):
+            result = tools.youtube_control("forward")
+
+        self.assertEqual(result, "Done: forward.")
+        self.page.evaluate.assert_called_once()
+        self.assertEqual(
+            self.page.evaluate.call_args.args[1],
+            {"direction": 1, "count": 1},
+        )
+        self.page.bring_to_front.assert_not_called()
+        self.page.keyboard.press.assert_not_called()
+
+    def test_seek_back_repeats_ten_second_skip_by_count(self) -> None:
+        with (
+            patch.object(tools, "OS", "Windows"),
+            patch.object(tools, "_port_open", return_value=True),
+            patch.object(tools, "_find_existing_page", return_value=self.page),
+        ):
+            result = tools.youtube_control("back", count=3)
+
+        self.assertEqual(result, "Done: back.")
+        self.assertEqual(
+            self.page.evaluate.call_args.args[1],
+            {"direction": -1, "count": 3},
+        )
+
+    def test_brightness_up_uses_windows_display_wmi(self) -> None:
+        completed = Mock(returncode=0, stdout="60\r\n", stderr="")
+        with (
+            patch.object(tools, "OS", "Windows"),
+            patch.object(tools.subprocess, "run", return_value=completed) as run,
+        ):
+            result = tools.set_brightness("up", count=2)
+
+        self.assertEqual(result, "Laptop brightness set to 60%.")
+        self.assertIn("WmiSetBrightness", run.call_args.args[0][-1])
+        self.assertIn("(1 * 10 * 2)", run.call_args.args[0][-1])
 
     def test_open_youtube_uses_fast_navigation_on_existing_tab(self) -> None:
         with (

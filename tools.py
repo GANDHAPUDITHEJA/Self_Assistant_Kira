@@ -257,6 +257,82 @@ def _port_open() -> bool:
         return sock.connect_ex(("127.0.0.1", CDP_PORT)) == 0
 
 
+def _wait_for_browser_port(timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _port_open():
+            return True
+        time.sleep(0.25)
+    return _port_open()
+
+
+def _launch_controlled_chrome(url: str) -> None:
+    subprocess.Popen(
+        [
+            _chrome_path(),
+            f"--remote-debugging-port={CDP_PORT}",
+            f"--user-data-dir={PROFILE_DIR}",
+            f"--profile-directory={_last_used_chrome_profile()}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+        ]
+    )
+
+
+def _navigate_existing_youtube_window(url: str) -> bool:
+    if OS != "Windows":
+        return False
+    try:
+        import win32gui
+    except ImportError:
+        return False
+
+    windows: list[tuple[int, str]] = []
+
+    def enum_windows(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd):
+            title = win32gui.GetWindowText(hwnd)
+            if "chrome" in title.lower() or "youtube" in title.lower():
+                windows.append((hwnd, title))
+
+    win32gui.EnumWindows(enum_windows, None)
+    if not windows:
+        return False
+
+    youtube_window = next(
+        (window for window in windows if "youtube" in window[1].lower()),
+        None,
+    )
+    foreground = win32gui.GetForegroundWindow()
+    target = youtube_window or next(
+        (window for window in windows if window[0] == foreground),
+        windows[0],
+    )
+    hwnd, title = target
+    if win32gui.IsIconic(hwnd):
+        win32gui.ShowWindow(hwnd, 9)
+    win32gui.SetForegroundWindow(hwnd)
+
+    if "youtube" not in title.lower():
+        pyautogui.hotkey("ctrl", "shift", "a")
+        pyautogui.write("YouTube", interval=0.001)
+        pyautogui.press("down")
+        pyautogui.press("enter")
+        for _ in range(10):
+            time.sleep(0.2)
+            if "youtube" in win32gui.GetWindowText(hwnd).lower():
+                break
+        else:
+            pyautogui.press("esc")
+            return False
+
+    pyautogui.hotkey("ctrl", "l")
+    pyautogui.write(url, interval=0.001)
+    pyautogui.press("enter")
+    return True
+
+
 def _get_page():
     """Attach to the user's normal Chrome profile through the CDP port."""
     global _pw, _context, _page
@@ -370,18 +446,31 @@ def search_youtube(query: str) -> str:
         + urllib.parse.quote(clean_query)
     )
     if OS == "Windows":
-        try:
-            page = _find_existing_page("youtube.com")
-            if page is None:
-                page = _get_page()
-            page.bring_to_front()
-            page.goto(search_url, wait_until="commit", timeout=10000)
-            _remember_tab(page.url, page.title())
+        if _port_open():
+            try:
+                page = _find_existing_page("youtube.com") or _get_page()
+                page.bring_to_front()
+                page.goto(search_url, wait_until="commit", timeout=5000)
+                _remember_tab(page.url, page.title())
+                return f"Searched YouTube for {clean_query}. The search results are open."
+            except Exception:
+                pass
+        if _navigate_existing_youtube_window(search_url):
+            _remember_tab(search_url)
             return f"Searched YouTube for {clean_query}. The search results are open."
-        except Exception:
-            pass
 
-    subprocess.Popen([_chrome_path(), search_url])
+        if _wait_for_browser_port():
+            try:
+                page = _find_existing_page("youtube.com") or _get_page()
+                page.bring_to_front()
+                page.goto(search_url, wait_until="commit", timeout=5000)
+                _remember_tab(page.url, page.title())
+                return f"Searched YouTube for {clean_query}. The search results are open."
+            except Exception:
+                pass
+        _launch_controlled_chrome(search_url)
+    else:
+        subprocess.Popen([_chrome_path(), search_url])
     _remember_tab(search_url)
     return f"Searched YouTube for {clean_query}. The search results are open."
 
@@ -506,7 +595,9 @@ def play_youtube(song: str) -> str:
 
 
 @_retry_if_closed
-def youtube_control(action: str) -> str:
+def youtube_control(action: str, count: int = 1) -> str:
+    if count < 1 or count > 100:
+        return "Choose a repeat count from 1 to 100."
     keys = {
         "pause": "k",
         "play": "k",
@@ -548,6 +639,8 @@ def youtube_control(action: str) -> str:
             if chrome_hwnd:
                 try:
                     import win32gui
+                    if win32gui.IsIconic(chrome_hwnd):
+                        win32gui.ShowWindow(chrome_hwnd, 9)
                     win32gui.SetForegroundWindow(chrome_hwnd)
                     time.sleep(0.15)
                 except Exception:
@@ -560,9 +653,11 @@ def youtube_control(action: str) -> str:
             elif action == "fullscreen":
                 pyautogui.press("f")
             elif action == "forward":
-                pyautogui.press("l")
+                for _ in range(count):
+                    pyautogui.press("l")
             elif action == "back":
-                pyautogui.press("j")
+                for _ in range(count):
+                    pyautogui.press("j")
             elif action == "next":
                 pyautogui.hotkey("shift", "n")
             elif action in {"scroll_down", "scroll_up"}:
@@ -585,8 +680,25 @@ def youtube_control(action: str) -> str:
         if page is None:
             page = _get_page()
         if "youtube.com" in page.url:
-            page.bring_to_front()
-            if action == "pause" or action == "play":
+            if action in {"forward", "back"}:
+                seeked = page.evaluate(
+                    """({direction, count}) => {
+                        const video = document.querySelector("video");
+                        if (!video) return false;
+                        video.currentTime = Math.max(
+                            0,
+                            video.currentTime + direction * 10 * count
+                        );
+                        return true;
+                    }""",
+                    {
+                        "direction": 1 if action == "forward" else -1,
+                        "count": count,
+                    },
+                )
+                if seeked is False:
+                    return "No YouTube video is available to seek."
+            elif action == "pause" or action == "play":
                 player = page.locator("video")
                 if player.count() > 0:
                     if action == "pause":
@@ -603,6 +715,49 @@ def youtube_control(action: str) -> str:
     except Exception as error:
         return f"Could not control YouTube: {error}"
     return f"Done: {action}."
+
+
+def set_brightness(action: str, count: int = 1) -> str:
+    if action not in {"up", "down"}:
+        return "I can increase or decrease laptop brightness."
+    if count < 1 or count > 100:
+        return "Choose a brightness step count from 1 to 100."
+    if OS != "Windows":
+        return "Laptop brightness control is only available on Windows."
+
+    direction = 1 if action == "up" else -1
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$monitor = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness | Select-Object -First 1
+$methods = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Select-Object -First 1
+if ($null -eq $monitor -or $null -eq $methods) {{ throw 'No compatible laptop display was found.' }}
+$target = [Math]::Max(0, [Math]::Min(100, [int]$monitor.CurrentBrightness + ({direction} * 10 * {count})))
+Invoke-CimMethod -InputObject $methods -MethodName WmiSetBrightness -Arguments @{{ Timeout = 1; Brightness = [byte]$target }} | Out-Null
+Write-Output $target
+"""
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"Could not change laptop brightness: {error}"
+    if result.returncode != 0:
+        error = result.stderr.strip() or "Windows could not set the display brightness."
+        return f"Could not change laptop brightness: {error}"
+    try:
+        brightness = int(result.stdout.strip())
+    except ValueError:
+        return "Could not change laptop brightness: Windows returned an invalid brightness level."
+    return f"Laptop brightness set to {brightness}%."
 
 
 @_retry_if_closed
@@ -667,11 +822,28 @@ def open_app(name: str) -> str:
         }
         if normalized_name in website_urls:
             url = website_urls[normalized_name]
+            is_youtube = normalized_name in {"youtube", "you tube"}
+            if OS == "Windows" and is_youtube:
+                if _port_open():
+                    try:
+                        page = _find_existing_page("youtube.com") or _get_page()
+                        page.bring_to_front()
+                        page.goto(url, wait_until="commit", timeout=5000)
+                        _remember_tab(page.url, page.title())
+                        return f"Opened {normalized_name.title()}."
+                    except Exception:
+                        pass
+                if _navigate_existing_youtube_window(url):
+                    _remember_tab(url)
+                    return f"Opened {normalized_name.title()}."
+
+                _launch_controlled_chrome(url)
+                _remember_tab(url)
+                return f"Opened {normalized_name.title()}."
+
             if OS == "Windows" and _port_open():
                 try:
-                    page = _find_existing_page(
-                        "youtube.com" if normalized_name in {"youtube", "you tube"} else ""
-                    )
+                    page = _find_existing_page()
                     if page is None:
                         page = _get_page()
                     page.bring_to_front()
@@ -691,19 +863,6 @@ def open_app(name: str) -> str:
             ])
             _remember_tab(url)
             return f"Opened {normalized_name.title()}."
-        if normalized_name in {"youtube", "you tube"}:
-            subprocess.Popen(
-                [
-                    _chrome_path(),
-                    f"--remote-debugging-port={CDP_PORT}",
-                    f"--user-data-dir={PROFILE_DIR}",
-                    f"--profile-directory={_last_used_chrome_profile()}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "https://www.youtube.com",
-                ]
-            )
-            return "Opened YouTube."
         if normalized_name in {"chrome", "google chrome"}:
             if _port_open():
                 try:
@@ -1626,6 +1785,7 @@ TOOL_FUNCS: dict[str, ToolFunction] = {
     "open_folder": open_folder,
     "close_app": close_app,
     "set_volume": set_volume,
+    "set_brightness": set_brightness,
     "type_text": type_text,
     "save_file": save_file,
     "clear_text": clear_text,
@@ -1650,7 +1810,7 @@ TOOL_FUNCS: dict[str, ToolFunction] = {
 TOOLS = [
     _tool("play_youtube", "Search YouTube and play a song or video.", {"song": {"type": "string"}}, ["song"]),
     _tool("search_youtube", "Open YouTube search results without starting a video.", {"query": {"type": "string"}}, ["query"]),
-    _tool("youtube_control", "Control the playing YouTube video or scroll YouTube.", {"action": {"type": "string", "enum": ["pause", "play", "mute", "unmute", "fullscreen", "forward", "back", "next", "scroll_down", "scroll_up", "top", "bottom"]}}, ["action"]),
+    _tool("youtube_control", "Control the playing YouTube video or scroll YouTube. Forward and back seek by 10 seconds per count; count defaults to one.", {"action": {"type": "string", "enum": ["pause", "play", "mute", "unmute", "fullscreen", "forward", "back", "next", "scroll_down", "scroll_up", "top", "bottom"]}, "count": {"type": "integer", "minimum": 1, "maximum": 100}}, ["action"]),
     _tool("web_search", "Search Google in the browser.", {"query": {"type": "string"}}, ["query"]),
     _tool("open_app", "Open an application on the laptop.", {"name": {"type": "string"}}, ["name"]),
     _tool("get_time", "Get the current time and date."),
@@ -1658,6 +1818,7 @@ TOOLS = [
     _tool("open_folder", "Open a folder on the laptop.", {"name": {"type": "string"}}, ["name"]),
     _tool("close_app", "Close a running application.", {"name": {"type": "string"}}, ["name"]),
     _tool("set_volume", "Change the system volume.", {"action": {"type": "string", "enum": ["up", "down", "mute", "unmute"]}}, ["action"]),
+    _tool("set_brightness", "Increase or decrease laptop display brightness. Each count changes brightness by 10 percentage points; count defaults to one.", {"action": {"type": "string", "enum": ["up", "down"]}, "count": {"type": "integer", "minimum": 1, "maximum": 100}}, ["action"]),
     _tool("type_text", "Type text into the focused window.", {"text": {"type": "string"}}, ["text"]),
     _tool("save_file", "Save the currently open Notepad document with a file name.", {"filename": {"type": "string"}}, ["filename"]),
     _tool("clear_text", "Clear all text in the currently open Notepad document."),
