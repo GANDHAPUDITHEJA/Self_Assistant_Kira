@@ -1137,7 +1137,6 @@ def _extract_wake_command(text: str) -> str | None:
         return None
     return match.group(1).strip()
 
-
 def _wait_for_voice_wake() -> str:
     while True:
         text = transcribe(record_until_silence(max_seconds=12, minimum_seconds=5))
@@ -1152,7 +1151,6 @@ def _wait_for_voice_wake() -> str:
             text = transcribe(record_until_silence(max_seconds=12))
             print(f"You: {text}")
             return text.strip()
-
 
 def _run_loop(voice_mode: bool) -> None:
     speak("Hello, I'm ready.")
@@ -1177,8 +1175,7 @@ def _run_loop(voice_mode: bool) -> None:
             return
         except Exception as error:
             print(f"Error: {error}")
-
-
+            
 def main() -> None:
     global VOICE_MODE
     args = _parse_args()
